@@ -46,12 +46,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: Silmaril-Security/public-repo-guard@main
+      - uses: Silmaril-Security/public-repo-guard@<commit-sha>
         with:
           customer-pattern: ${{ secrets.PUBLIC_REPO_GUARD_CUSTOMER_PATTERN }}
 ```
 
-Then grant the repository access to the organization secret and add it to the organization ruleset that requires the `public-repo-guard` status check on the default branch.
+Pin `<commit-sha>` to the full SHA of a commit on `main`, so a change to the guard reaches a repository only through a reviewed update there. Then grant the repository access to the organization secret and add it to the organization ruleset that requires the `public-repo-guard` status check on the default branch.
 
 Pull requests from forks and Dependabot do not receive Actions secrets. For those runs the public rules still apply and the customer-name rule is skipped with a notice. Any other run without the secret fails, so a missing grant cannot silently disable the rule.
 
