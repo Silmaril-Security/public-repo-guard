@@ -65,27 +65,31 @@ class Text:
     path: str | None = None
     line: int | None = None
 
-    @property
-    def location(self) -> str:
-        return f"{self.path or ''}{'' if self.line is None else f':{self.line}'}"
-
 
 @dataclass(frozen=True)
 class Finding:
     rule: Rule
     text: Text
     match: str
+    path_redacted: bool = False
 
     @property
     def shown(self) -> str:
         return "[redacted]" if self.rule.redacted else self.match
 
+    @property
+    def location(self) -> str:
+        if self.path_redacted:
+            return "[redacted path]"
+        line = "" if self.text.line is None else f":{self.text.line}"
+        return f"{self.text.path or ''}{line}"
+
     def annotation(self) -> str:
         properties = {"title": f"public-repo-guard: {self.rule.name}"}
-        if self.text.path is not None:
+        if self.text.path is not None and not self.path_redacted:
             properties["file"] = self.text.path
-        if self.text.line is not None:
-            properties["line"] = str(self.text.line)
+            if self.text.line is not None:
+                properties["line"] = str(self.text.line)
         rendered = ",".join(f"{key}={escape_property(value)}" for key, value in properties.items())
         message = f"{self.rule.name} in {self.text.source}: {self.shown}"
         return f"::error {rendered}::{escape_data(message)}"
@@ -196,20 +200,25 @@ def diff_path(header: str) -> str | None:
     return raw.removeprefix("b/")
 
 
+def raw_path(raw: str) -> str | None:
+    metadata, *paths = raw.split("\t")
+    return None if metadata.split()[-1].startswith("D") else paths[-1].strip('"')
+
+
 def patch_texts(sha: str, patch: str) -> Iterator[Text]:
     path: str | None = None
     line = 0
+    in_header = True
     in_hunk = False
-    for raw in patch.splitlines():
+    for raw in patch.split("\n"):
         if raw.startswith("diff --git "):
-            path, in_hunk = None, False
+            path, in_header, in_hunk = None, False, False
+        elif in_header and raw.startswith(":"):
+            changed = raw_path(raw)
+            if changed is not None:
+                yield Text(f"commit {sha[:12]} path", changed, changed)
         elif not in_hunk and raw.startswith("+++ "):
             path = diff_path(raw[4:])
-            if path is not None:
-                yield Text(f"commit {sha[:12]} path", path, path)
-        elif not in_hunk and raw.startswith("rename to "):
-            path = raw.removeprefix("rename to ")
-            yield Text(f"commit {sha[:12]} path", path, path)
         elif hunk := HUNK_HEADER.match(raw):
             line, in_hunk = int(hunk[1]), True
         elif in_hunk and raw.startswith("+") and path is not None:
@@ -218,25 +227,22 @@ def patch_texts(sha: str, patch: str) -> Iterator[Text]:
 
 
 def commit_texts(head: str, exclude: Iterable[str]) -> Iterator[Text]:
-    log = git(
-        "log",
-        "--reverse",
-        "--patch",
-        "--unified=0",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--format=%x1e%H%n%B%x1f",
-        head,
-        "--not",
-        *exclude,
-        "--",
-    )
-    for record in log.split("\x1e")[1:]:
-        header, _, patch = record.partition("\x1f")
-        sha, _, message = header.partition("\n")
-        for content in message.splitlines():
+    for sha in git("rev-list", "--reverse", head, "--not", *exclude, "--").split():
+        for content in git("show", "--no-patch", "--format=%B", sha).splitlines():
             yield Text(f"commit {sha[:12]} message", content)
+        patch = git(
+            "show",
+            "--format=",
+            "--raw",
+            "--patch",
+            "--diff-merges=remerge",
+            "--unified=0",
+            "--text",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            sha,
+        )
         yield from patch_texts(sha, patch)
 
 
@@ -279,8 +285,9 @@ def resolve_scope(event_name: str, event: dict, repository: str, actor: str) -> 
 
 def scan(texts: Iterable[Text], rules: Iterable[Rule], allowlist: frozenset[str]) -> list[Finding]:
     active = tuple(rules)
+    redacting = tuple(rule for rule in active if rule.redacted)
     return [
-        Finding(rule, text, match)
+        Finding(rule, text, match, path_redacted=path_is_redacted(text.path, redacting))
         for text in texts
         if text.line is None or fingerprint(text.path or "", text.content) not in allowlist
         for rule in active
@@ -288,12 +295,16 @@ def scan(texts: Iterable[Text], rules: Iterable[Rule], allowlist: frozenset[str]
     ]
 
 
+def path_is_redacted(path: str | None, redacting: tuple[Rule, ...]) -> bool:
+    return path is not None and any(rule.matches(path) for rule in redacting)
+
+
 def write_summary(findings: list[Finding], notices: list[str]) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
     rows = [
-        f"| {finding.rule.name} | {finding.text.source} | {finding.text.location} | `{finding.shown}` |"
+        f"| {finding.rule.name} | {finding.text.source} | {finding.location} | `{finding.shown}` |"
         for finding in findings
     ]
     lines = [

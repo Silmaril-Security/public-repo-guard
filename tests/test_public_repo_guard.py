@@ -109,6 +109,19 @@ def test_customer_rule_is_case_insensitive_and_redacted() -> None:
     )
 
 
+def test_redacted_paths_are_hidden_from_annotations_and_locations() -> None:
+    path = f"docs/{CANARY}.md"
+    text = guard.Text("commit abc", f"url = {API_HOST}", path, 3)
+
+    findings = guard.scan([text], (*guard.PUBLIC_RULES, guard.customer_rule(CANARY)), frozenset())
+
+    assert [(f.rule.name, f.location) for f in findings] == [
+        ("aws-api-gateway-endpoint", "[redacted path]")
+    ]
+    assert CANARY not in findings[0].annotation()
+    assert "file=" not in findings[0].annotation()
+
+
 def test_annotation_escapes_file_properties_and_data() -> None:
     text = guard.Text("commit abc", API_HOST, "docs/a,b:c.md", 7)
     annotation = guard.Finding(rule("aws-api-gateway-endpoint"), text, "50%\nnext").annotation()
@@ -122,6 +135,10 @@ def test_annotation_escapes_file_properties_and_data() -> None:
 def test_patch_texts_tracks_paths_and_added_line_numbers() -> None:
     patch = "\n".join(
         [
+            ":100644 100644 1111111 2222222 M\tsrc/app.py",
+            ":100644 100644 3333333 3333333 R100\told.md\tdocs/new.md",
+            ":100644 000000 4444444 0000000 D\tgone.txt",
+            "",
             "diff --git a/src/app.py b/src/app.py",
             "--- a/src/app.py",
             "+++ b/src/app.py",
@@ -145,11 +162,60 @@ def test_patch_texts_tracks_paths_and_added_line_numbers() -> None:
 
     assert list(guard.patch_texts("a" * 40, patch)) == [
         guard.Text("commit aaaaaaaaaaaa path", "src/app.py", "src/app.py"),
+        guard.Text("commit aaaaaaaaaaaa path", "docs/new.md", "docs/new.md"),
         guard.Text("commit aaaaaaaaaaaa", "first = 1", "src/app.py", 4),
         guard.Text("commit aaaaaaaaaaaa", "++ second = 2", "src/app.py", 5),
         guard.Text("commit aaaaaaaaaaaa", "third = 3", "src/app.py", 12),
-        guard.Text("commit aaaaaaaaaaaa path", "docs/new.md", "docs/new.md"),
     ]
+
+
+def test_commit_texts_scans_merge_resolutions(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repo)
+    base = commit(repo, "config.ts", "export const url = 'base';\n", "feat: config")
+    git(repo, "checkout", "-q", "-b", "topic")
+    commit(repo, "config.ts", "export const url = 'topic';\n", "feat: topic")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "config.ts", "export const url = 'main';\n", "feat: main")
+    subprocess.run(["git", "merge", "-q", "topic"], cwd=repo, capture_output=True)
+    head = commit(repo, "config.ts", f"export const url = '{API_HOST}';\n", "chore: merge topic")
+
+    findings = guard.scan(guard.commit_texts(head, (base,)), guard.PUBLIC_RULES, frozenset())
+
+    assert [(f.rule.name, f.text.path, f.text.line) for f in findings] == [
+        ("aws-api-gateway-endpoint", "config.ts", 1)
+    ]
+
+
+def test_commit_texts_scans_binary_and_undiffable_files(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(repo)
+    base = commit(repo, ".gitattributes", "*.cfg -diff\n", "chore: attributes")
+    (repo / f"{CANARY}.png").write_bytes(b"\x89PNG\x00\x01")
+    head = commit(repo, "service.cfg", f"url={API_HOST}\n", "chore: config")
+
+    findings = guard.scan(
+        guard.commit_texts(head, (base,)),
+        (*guard.PUBLIC_RULES, guard.customer_rule(CANARY)),
+        frozenset(),
+    )
+
+    assert sorted((f.rule.name, f.location) for f in findings) == [
+        ("aws-api-gateway-endpoint", "service.cfg:1"),
+        ("customer-name", "[redacted path]"),
+    ]
+
+
+def test_commit_texts_reads_whole_messages_with_control_bytes(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(repo)
+    base = git(repo, "rev-parse", "HEAD")
+    head = commit(repo, "a.txt", "a\n", f"feat: a\x1f\x1e {DEPLOYMENT}")
+
+    findings = guard.scan(guard.commit_texts(head, (base,)), guard.PUBLIC_RULES, frozenset())
+
+    assert [(f.rule.name, f.match) for f in findings] == [("deployment-identifier", DEPLOYMENT)]
 
 
 def test_commit_texts_scans_every_commit_and_message(
