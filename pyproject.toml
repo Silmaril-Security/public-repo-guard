@@ -1,0 +1,17 @@
+[project]
+name = "public-repo-guard"
+version = "1.0.0"
+description = "CI check that keeps infrastructure endpoints, internal identifiers and customer names out of public repositories"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
