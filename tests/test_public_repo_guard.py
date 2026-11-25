@@ -289,6 +289,7 @@ def run_scan_environment(
     monkeypatch.setenv("GITHUB_REPOSITORY", "org/repo")
     monkeypatch.setenv("GITHUB_ACTOR", "dev")
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
     return summary
 
 
@@ -304,6 +305,7 @@ def test_run_scan_reports_redacted_customer_findings(
     monkeypatch.setenv(guard.CUSTOMER_PATTERN_ENV, CANARY)
 
     assert guard.run_scan(repo) == 1
+    assert (tmp_path / "output").read_text() == f"log-opts={after} --not {before}\n"
     output = capsys.readouterr().out
     assert "file=notes.md,line=1::customer-name" in output
     assert CANARY not in output

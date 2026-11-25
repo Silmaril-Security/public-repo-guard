@@ -312,6 +312,13 @@ def write_summary(findings: list[Finding], notices: list[str]) -> None:
         summary.write("\n".join(lines) + "\n")
 
 
+def write_output(name: str, value: str) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a") as output:
+            output.write(f"{name}={value}\n")
+
+
 def run_scan(workspace: Path) -> int:
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     scope = resolve_scope(
@@ -323,6 +330,7 @@ def run_scan(workspace: Path) -> int:
     if scope is None:
         print("Nothing to scan for a deleted ref.")
         return 0
+    write_output("log-opts", " ".join((scope.head, "--not", *scope.exclude)))
     customer_pattern = os.environ.get(CUSTOMER_PATTERN_ENV, "").strip()
     notices: list[str] = []
     if customer_pattern:

@@ -1,6 +1,6 @@
 # public-repo-guard
 
-A CI check that keeps infrastructure endpoints, internal identifiers and customer names out of Silmaril Security's public repositories. GitHub secret scanning and push protection already cover credentials; this check covers the leaks they do not.
+A CI check that keeps infrastructure endpoints, internal identifiers and customer names out of Silmaril Security's public repositories. GitHub secret scanning and push protection cover provider credentials; this check covers the leaks they do not and adds gitleaks' default credential rules.
 
 ## What it blocks
 
@@ -19,6 +19,7 @@ The check scans every new commit in a pull request or push (added lines, file pa
 | `deployment-identifier` | Resource names ending in `-<stage>-<region>` |
 | `silmaril-staged-host` | Hosts under a stage subdomain of `silmaril.dev` |
 | `customer-name` | Customer and tenant names, read at runtime from an organization secret |
+| gitleaks | Credentials matched by the default rules of a pinned, checksum-verified gitleaks release |
 
 Documentation placeholders pass: `<api-id>`-style tokens, the AWS documentation account IDs such as `123456789012`, account IDs made of one repeated digit, and deployment names that start with `tenant-<letter>`, `example`, `sample`, `placeholder`, `forbidden`, `my` or `your`.
 
@@ -62,7 +63,7 @@ A repository can allow an exact line of an exact file by listing its fingerprint
 python3 path/to/public_repo_guard.py fingerprint README.md 40 >> .github/public-repo-guard-allowlist
 ```
 
-Allowlist changes go through code review like any other change. Commit messages and pull request text cannot be allowlisted.
+Allowlist changes go through code review like any other change. Commit messages and pull request text cannot be allowlisted. A reviewed gitleaks false positive goes in `.gitleaksignore` using the fingerprint gitleaks prints.
 
 ## Development
 
